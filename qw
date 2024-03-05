@@ -1,0 +1,203 @@
+import RPi.GPIO as GPIO
+import time
+import keyboard
+import cv2
+import numpy as np
+
+# GPIO 핀 설정
+TRIG = 23  # 초음파 센서의 TRIG 핀
+ECHO = 24  # 초음파 센서의 ECHO 핀
+LEFT_PWM_PIN = 17  # 왼쪽 모터의 PWM 핀 (PWM 제어)
+RIGHT_PWM_PIN = 18  # 오른쪽 모터의 PWM 핀 (PWM 제어)
+
+# PWM 주파수 및 초기 듀티 사이클 설정
+pwm_freq = 1000  # PWM 주파수 (Hz)
+pwm_duty_cycle = 50  # 초기 PWM 듀티 사이클 (%)
+
+# GPIO 초기화
+GPIO.setmode(GPIO.BCM)
+GPIO.setup(TRIG, GPIO.OUT)
+GPIO.setup(ECHO, GPIO.IN)
+GPIO.setup(LEFT_PWM_PIN, GPIO.OUT)
+GPIO.setup(RIGHT_PWM_PIN, GPIO.OUT)
+
+# PWM 초기화
+left_pwm = GPIO.PWM(LEFT_PWM_PIN, pwm_freq)
+right_pwm = GPIO.PWM(RIGHT_PWM_PIN, pwm_freq)
+
+# PWM 시작
+left_pwm.start(pwm_duty_cycle)
+right_pwm.start(pwm_duty_cycle)
+#빨,초,파 범위 설정
+red_lower = np.array([0, 100, 100])
+red_upper = np.array([10, 255, 255])
+green_lower = np.array([45, 50, 50])
+green_upper = np.array([75, 255, 255])
+blue_lower = np.array([90, 50, 50])
+blue_upper = np.array([120, 255, 255])
+
+# 초음파 센서 거리 측정 함수
+def measure_distance():
+    GPIO.output(TRIG, True)
+    time.sleep(0.00001)
+    GPIO.output(TRIG, False)
+
+    pulse_start = time.time()
+    pulse_end = time.time()
+
+    while GPIO.input(ECHO) == 0:
+        pulse_start = time.time()
+
+    while GPIO.input(ECHO) == 1:
+        pulse_end = time.time()
+
+    pulse_duration = pulse_end - pulse_start
+    distance = pulse_duration * 17150  # 음속 (340m/s)을 고려한 거리 계산
+    return distance
+
+# 모터 속도 및 방향 설정 함수
+def set_motor_speed(speed, direction):
+    if direction == 0:
+        # 정지
+        left_pwm.ChangeDutyCycle(0)
+        right_pwm.ChangeDutyCycle(0)
+    elif direction == 1:
+        # 전진
+        left_pwm.ChangeDutyCycle(speed)
+        right_pwm.ChangeDutyCycle(speed)
+    elif direction == -1:
+        # 후진
+        left_pwm.ChangeDutyCycle(speed)
+        right_pwm.ChangeDutyCycle(speed)
+    elif direction == 2:
+        # 좌회전 (왼쪽 모터를 정지, 오른쪽 모터 전진)
+        left_pwm.ChangeDutyCycle(0)
+        right_pwm.ChangeDutyCycle(speed)
+    elif direction == -2:
+        # 우회전 (왼쪽 모터 전진, 오른쪽 모터를 정지)
+        left_pwm.ChangeDutyCycle(speed)
+        right_pwm.ChangeDutyCycle(0)
+
+# 주행 모드 변수
+driving_mode = "normal"  # 주행 모드: "normal" 또는 "parking" 또는 "line_following"
+
+# 주행 모드 함수
+def drive_in_mode():
+    if driving_mode == "normal":
+        if distance < 20:
+            speed = 0
+            direction = 0
+        else:
+            if keyboard.is_pressed('up'):
+                speed = 1
+                direction = 1
+            elif keyboard.is_pressed('down'):
+                speed = 1
+                direction = -1
+            elif keyboard.is_pressed('left'):
+                speed = 1
+                direction = 2
+            elif keyboard.is_pressed('right'):
+                speed = 1
+                direction = -2
+            else:
+                speed = 0
+                direction = 0
+    elif driving_mode == "line_following":
+        # 선 따라가기 모드: 선 따라가기 코드를 여기에 추가
+        while True:
+            ret, frame = cap.read()
+            if not ret:
+                break
+
+            hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+
+            # 빨강색 범위
+            mask_red = cv2.inRange(hsv, red_lower, red_upper)
+            # 초록색 범위
+            mask_green = cv2.inRange(hsv, green_lower, green_upper)
+            # 파랑색 범위
+            mask_blue = cv2.inRange(hsv, blue_lower, blue_upper)
+
+            contours_red, _ = cv2.findContours(mask_red, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            contours_green, _ = cv2.findContours(mask_green, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            contours_blue, _ = cv2.findContours(mask_blue, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+            for idx in follow_priority:
+                if idx == 0:
+                    contours = contours_red
+                elif idx == 1:
+                    contours = contours_green
+                elif idx == 2:
+                    contours = contours_blue
+
+                if contours:
+                    largest_contour = max(contours, key=cv2.contourArea)
+                    M = cv2.moments(largest_contour)
+
+                    if M["m00"] != 0:
+                        cX = int(M["m10"] / M["m00"])
+                        cY = int(M["m01"] / M["m00"])
+
+                        error = cX - frame.shape[1] / 2
+
+                        # 갈림길에서 좌우 이동 결정
+                        if len(follow_priority) > 1:
+                            if error > 0:
+                                # 오른쪽으로 이동
+                                set_motor_speed(50, 2)
+                            else:
+                                # 왼쪽으로 이동
+                                set_motor_speed(50, -2)
+                        else:
+                            # 일반적으로 라인 따라가기
+                            angle = error / 100
+                            set_motor_speed(50, 1)
+        pass
+
+# 변수 초기화
+follow_priority = [0, 1, 2]  # 기본 우선 순위 (빨, 초, 파)
+#키보드키에 따라 우선순위 바뀜
+def change_priority(e):
+    global follow_priority
+    key = e.name
+    if key == '1':
+        follow_priority = [0, 1, 2]  # 빨, 초, 파
+    elif key == '2':
+        follow_priority = [0, 2, 1]  # 빨, 파, 초
+    elif key == '3':
+        follow_priority = [1, 0, 2]  # 초, 빨, 파
+    elif key == '4':
+        follow_priority = [1, 2, 0]  # 초, 파, 빨
+    elif key == '5':
+        follow_priority = [2, 0, 1]  # 파, 빨, 초
+    elif key == '6':
+        follow_priority = [2, 1, 0]  # 파, 초, 빨
+
+# 키보드 이벤트 리스너 등록
+keyboard.hook(change_priority)
+
+# 카메라 초기화
+cap = cv2.VideoCapture(0)
+# 주행 및 주차 루프
+try:
+    cap = cv2.VideoCapture(0)
+
+    while True:
+        distance = measure_distance()
+
+        drive_in_mode()  # 주행 모드 함수 호출
+
+        if keyboard.is_pressed('p'):
+            driving_mode = "parking"  # 주차 모드로 전환
+        elif keyboard.is_pressed('c'):
+            driving_mode = "line_following"  # 선 따라가기 모드로 전환
+            change_priority()
+except KeyboardInterrupt:
+    print("Exiting...")
+
+finally:
+    left_pwm.stop()
+    right_pwm.stop()
+    GPIO.cleanup()
+    cap.release()
